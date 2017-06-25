@@ -58,6 +58,18 @@ class IoC_Block:
 			logging.info("Starting IPv4 blocks...")
 			ip4list=[]
 			ipv4_pattern=re.compile("^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$")
+			whitelist=set()
+			with open(self.repo+"/whitelist.IPv4","a+") as wl4:
+				for e in wl4.read().split("\n"):
+					l=e.strip()
+					if not e[0] == "#":
+						m=re.match(ipv4_pattern,l)
+						if None is m:
+							whitelist.add(l)
+						else:
+							print("Skipped IPv4 whitelist entry:"+l)
+							logging.error("Skipped IPv4 whitelist entry:"+l)
+							
 			with open(self.repo+self.ip4file,"r") as ip4f:
 				ip4list=ip4f.read().split("\n")
 			iptlist_input=[]
@@ -83,27 +95,36 @@ class IoC_Block:
 					continue
 				else:	
 					#ntums
-					skip_in=False
-					skip_out=False
-					for e in iptlist_input:
-						if ip4 in e:
+					skip_in,skip_out,skip_whitelist=False
+					
+					for ei in iptlist_input:
+						if ip4 in ei:
 							skip_in=True
 							break
-					for e in iptlist_output:
-						if ip4 in e:
+					for eo in iptlist_output:
+						if ip4 in eo:
 							skip_out=True
 							break
 							
-						
-					if skip_in:
-						logging.debug("Skipping input block of "+ip4+" as a result of an exisiting block")
+					for ew in whitelist:
+						if ip4 == ew:
+							skip_whitelist=True
+							break	
+								
+					if not skip_whitelist:	
+						if skip_in:
+							logging.debug("Skipping input block of "+ip4+" as a result of an exisiting block")
+						else:
+							blocklist.add(' '.join(["-A","INPUT","-s",ip4,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for inbound IPv4 IoC"']))
+							
+						if skip_out:
+							logging.debug("Skipping output block of "+ip4+" as a result of an exisiting block")
+						else:	
+							blocklist.add(' '.join(["-A","OUTPUT","-d",ip4,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for outbound IPv4 IoC"']))
 					else:
-						blocklist.add(' '.join(["-A","INPUT","-s",ip4,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for inbound IPv4 IoC"']))
+						print("Skipping "+ip4+" due to a whitelist entry.")		
+						logging.info("Skipping "+ip4+" due to a whitelist entry.")
 						
-					if skip_out:
-						logging.debug("Skipping output block of "+ip4+" as a result of an exisiting block")
-					else:	
-						blocklist.add(' '.join(["-A","OUTPUT","-d",ip4,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for outbound IPv4 IoC"']))
 			tmp_path=self.tmpath+"/.threatwall.ipv4.iptables-save"
 			with open(os.path.abspath(tmp_path),"a+") as ipts:
 				ipts.write(self.prelude)
@@ -126,9 +147,21 @@ class IoC_Block:
 			logging.info("Starting domain blocks...")
 			domainlist=[]
 			domain_pattern=re.compile("^[a-zA-Z0-9\.-]*$")
-			with open(self.repo+self.domainfile,"r") as df:
+			with open(self.repo+"/"+self.domainfile,"r") as df:
 				domainlist=df.read().split("\n")
 			iptlist_input=[]
+			whitelist=set()
+			with open(self.repo+"/whitelist.domain","a+") as df:
+				for e in df.read().split("\n"):
+					l=e.strip()
+					if not e[0] == "#":
+						m=re.match(domain_pattern,l)
+						if None is m:
+							whitelist.add(l)
+						else:
+							print("Skipped domain whitelist entry:"+l)
+							logging.error("Skipped domain whitelist entry:"+l)
+							
 			ret=subprocess.check_output(["/sbin/iptables","-n","-L","INPUT"],shell=False)
 			if not None is ret and len(ret)>0:
 				iptlist_input=ret.split("\n")
@@ -146,13 +179,17 @@ class IoC_Block:
 				domain=e.strip().replace(";","").replace("`","").replace(" ","") 
 				m=re.match(domain_pattern,domain)
 				if None is m:
-					print("Invalid entry in the domain IOC list: "+ip4)
-					logging.error("Invalid entry in the domain IOC list: "+ip4)
+					print("Invalid entry in the domain IOC list: "+domain)
+					logging.error("Invalid entry in the domain IOC list: "+domain)
 					continue
 				#ntums
-				skip_in=False
-				skip_out=False
+				skip_in,skip_out,skip_whitelist=False
 				
+				for ew in whitelist:
+						if domain == ew:
+							skip_whitelist=True
+							break
+							
 				for e in iptlist_input:
 					if domain.lower() in e.lower():
 						skip_in=True
@@ -161,18 +198,23 @@ class IoC_Block:
 				for e in iptlist_output:
 					if domain.lower() in e.lower():
 						skip_out=True
-						break		
-				if skip_in:
-					logging.debug("Skipping input block of "+domain+" as a result of an exisiting block")
+						break	
+				if not skip_whitelist:			
+					if skip_in:
+						logging.debug("Skipping input block of "+domain+" as a result of an exisiting block")
+					else:
+						blocklist.add(' '.join(["-A","INPUT","-p","tcp","--sport","53","-m","string","--algo","bm","--string",domain,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for inbound TCP DNS IoC"']))
+						blocklist.add(' '.join(["-A","INPUT","-p","udp","--sport","53","-m","string","--algo","bm","--string",domain,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for inbound UDP DNS IoC"']))
+					
+					if skip_out:
+						logging.debug("Skipping output block of "+domain+" as a result of an exisiting block")
+					else:	
+						blocklist.add(' '.join(["-A","OUTPUT","-p","tcp","--dport","53","-m","string","--algo","bm","--string",domain,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for outbound TCP DNS IoC"']))
+						blocklist.add(' '.join(["-A","OUTPUT","-p","udp","--dport","53","-m","string","--algo","bm","--string",domain,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for outbound UDP DNS IoC"']))
 				else:
-					blocklist.add(' '.join(["-A","INPUT","-p","tcp","--sport","53","-m","string","--algo","bm","--string",domain,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for inbound TCP DNS IoC"']))
-					blocklist.add(' '.join(["-A","INPUT","-p","udp","--sport","53","-m","string","--algo","bm","--string",domain,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for inbound UDP DNS IoC"']))
-				
-				if skip_out:
-					logging.debug("Skipping output block of "+domain+" as a result of an exisiting block")
-				else:	
-					blocklist.add(' '.join(["-A","OUTPUT","-p","tcp","--dport","53","-m","string","--algo","bm","--string",domain,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for outbound TCP DNS IoC"']))
-					blocklist.add(' '.join(["-A","OUTPUT","-p","udp","--dport","53","-m","string","--algo","bm","--string",domain,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for outbound UDP DNS IoC"']))
+					print("Skipping "+domain+" due to a whitelist entry.")		
+					logging.info("Skipping "+domain+" due to a whitelist entry.")
+								
 			tmp_path= self.tmpath+"/.threatwall.domain.iptables-save"
 			with open(os.path.abspath(tmp_path),"a+") as ipts:
 				ipts.write(self.prelude)
@@ -191,7 +233,108 @@ class IoC_Block:
 			return 
 			
 	def block_urls(self):
-		pass #TODO
+		try:
+			logging.info("Starting URL blocks...")
+			URLlist=[]
+			URL_pattern=re.compile("^[\s\w]+:\/\/([:\-_a-zA-Z0-9\.]+)(\/?.*)$")
+			with open(self.repo+"/"+self.URLfile,"r") as df:
+				URLlist=df.read().split("\n")
+			iptlist_input=[]
+			whitelist=set()
+			with open(self.repo+"/whitelist.URL","a+") as df:
+				for e in df.read().split("\n"):
+					l=e.strip()
+					if not e[0] == "#":
+						m=re.match(URL_pattern,l)
+						if None is m:
+							whitelist.add(l)
+						else:
+							print("Skipped URL whitelist entry:"+l)
+							logging.error("Skipped URL whitelist entry:"+l)
+							
+			ret=subprocess.check_output(["/sbin/iptables","-n","-L","INPUT"],shell=False)
+			if not None is ret and len(ret)>0:
+				iptlist_input=ret.split("\n")
+			
+			iptlist_output=[]
+			ret=subprocess.check_output(["/sbin/iptables","-n","-L","OUTPUT"],shell=False)
+			if not None is ret and len(ret)>0:
+				iptlist_output=ret.split("\n")
+				
+			blocklist=set()	
+			URL_list_processed=set()
+			
+			for e in URLlist:
+				if None is e or len(e)<2:
+					continue
+				#safety for the paranoid
+				URLtmp=e.strip().replace(";","").replace("`","").replace(" ","") 
+				m=re.match(URL_pattern,URLtmp)
+				if None is m:
+					print("Invalid entry in the URL IOC list: "+e)
+					logging.error("Invalid entry in the URL IOC list: "+e)
+					continue
+				elif not None is m.group(1):
+					URL_list_processed.add(m.group(1))
+				elif not None is m.group(2):
+					URL_list_processed.add(m.group(2))
+				else:
+					print("URL entry matched regex but no groups found:"+e)	
+					logging.error("URL entry matched regex but no groups found:"+e)	
+					continue
+					
+			for	URL in URL_list_processed:
+				#ntums
+				skip_in,skip_out,skip_whitelist=False
+				
+				for ew in whitelist:
+						if URL == ew:
+							skip_whitelist=True
+							break
+							
+				for e in iptlist_input:
+					if URL.lower() in e.lower():
+						skip_in=True
+						break
+						
+				for e in iptlist_output:
+					if URL.lower() in e.lower():
+						skip_out=True
+						break	
+				if not skip_whitelist:			
+					if skip_in:
+						logging.debug("Skipping input block of "+URL+" as a result of an exisiting block")
+					else:
+						blocklist.add(' '.join(["-A","INPUT","-p","tcp","-m","--multiport","!","--sports","443,8443,6697","-m","string","--algo","bm","--string",URL,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for inbound TCP URL IoC"']))
+						blocklist.add(' '.join(["-A","INPUT","-p","udp","-m","--multiport","!","--sports","443,8443,6697","-m","string","--algo","bm","--string",URL,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for inbound UDP URL IoC"']))
+					
+					if skip_out:
+						logging.debug("Skipping output block of "+URL+" as a result of an exisiting block")
+					else:	
+						blocklist.add(' '.join(["-A","OUTPUT","-p","tcp","-m","--multiport","!","--sports","443,8443,6697","-m","string","--algo","bm","--string",URL,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for outbound TCP URL IoC"']))
+						blocklist.add(' '.join(["-A","OUTPUT","-p","udp","-m","--multiport","!","--sports","443,8443,6697","string","--algo","bm","--string",URL,"-j","THREATWALL","-m","comment","--comment",'"Placed by threatwall for outbound UDP URL IoC"']))
+				else:
+					print("Skipping "+URL+" due to a whitelist entry.")		
+					logging.info("Skipping "+URL+" due to a whitelist entry.")
+								
+			tmp_path= self.tmpath+"/.threatwall.URL.iptables-save"
+			with open(os.path.abspath(tmp_path),"a+") as ipts:
+				ipts.write(self.prelude)
+				for e in blocklist:
+					ipts.write(e+"\n")
+				ipts.write("COMMIT\n")
+			ret=subprocess.call(["iptables-restore","--noflush","--verbose",tmp_path],shell=False) #calling iptables to apply this directly takes too long(as in hours)
+			if ret != 0:
+				print("Error applying URL blocks via iptables-restore")
+				logging.error("Error applying URL blocks via iptables-restore")
+
+			os.remove(tmp_path)
+						
+		except Exception as e:
+			logging.exception("Error applying URL blocks")	
+			return 
+			
+
 		
 class Fetch:
 	def __init__(self,repository,ioc_path):
@@ -317,14 +460,14 @@ def main():
 		sys.exit()
 		
 	feed=Fetch(args['gitrepo'],args['localclone'])
-	ioc=IoC_Block("./threatrepo",target=args['target'],inpolicy=args['INPUT-POLICY'],outpolicy=args['OUTPUT-POLICY'],forwardpolicy=args['FORWARD-POLICY'],tmpath=args['tmpath'])
+	ioc=IoC_Block(args['localclone'],target=args['target'],inpolicy=args['INPUT-POLICY'],outpolicy=args['OUTPUT-POLICY'],forwardpolicy=args['FORWARD-POLICY'],tmpath=args['tmpath'])
 	feed.sync() #the above line needs to happen before this.
 
 	if ioc.ready:
 		while True:
 			ioc.block_ip4()
 			ioc.block_domains()
-			ioc.block_urls() #TODO
+			ioc.block_urls() 
 			logging.info("Applied all blocks")
 			time.sleep(args['interval']) 
 			feed.sync()
